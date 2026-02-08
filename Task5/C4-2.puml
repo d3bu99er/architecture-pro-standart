@@ -1,0 +1,90 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+title Диаграмма компонентов: Кредитный шлюз
+
+Container_Boundary(gateway_boundary, "Кредитный шлюз (.NET Core 6+)") {
+  Component(website_api, "API для сайта", "ASP.NET Core Controller", "Приём заявок от новых клиентов,\nинициация предварительного скоринга")
+  Component(ibank_api, "API для интернет-банка", "ASP.NET Core Controller", "Приём заявок от существующих клиентов,\nотображение предодобренных предложений")
+  Component(credit_cache, "Кэш условий кредитов", "Redis Client", "Хранение справочной информации,\nфоновая синхронизация из АБС")
+  Component(claims_queue, "Очередь заявок", "MS SQL Table", "Промежуточное хранение заявок,\nстатусы жизненного цикла")
+  Component(scoring_adapter, "Скоринг-адаптер", "Background Service", "Асинхронный вызов системы скоринга,\nограничение частоты, приоритетная очередь")
+  Component(preapproval_generator, "Генератор предодобренных предложений", "Background Service", "Фоновый расчёт предложений для существующих клиентов,\nзапуск в непиковые часы (22:00-06:00)")
+  Component(sms_component, "Компонент СМС", "HTTP Client", "Интеграция с Депозитным шлюзом,\nотправка уведомлений о статусе")
+  Component(audit_component, "Компонент аудита", "HTTP Client", "Интеграция с Депозитным шлюзом,\nлогирование всех операций")
+  Component(claims_db, "Хранилище заявок", "MS SQL Table", "Таблица CreditClaims:\n- claim_id (уникальный)\n- client_id / passport_data\n- status\n- created_at\n- scoring_result\n- preapproval_data")
+}
+
+System_Ext(website_sys, "Сайт", "PHP + React.js")
+System_Ext(ibank_sys, "Интернет-банк", "ASP.NET MVC 4.5")
+System_Ext(scoring_sys, "Система скоринга", "Python + Flask")
+System_Ext(bki_sys, "Бюро кредитных историй", "REST API")
+System_Ext(abc_sys, "АБС", "Oracle DB")
+System_Ext(deposit_gateway_sys, "Депозитный шлюз", "Существующий сервис")
+
+Rel(website_sys, website_api, "POST /api/v1/credit-claims", "HTTPS/TLS 1.2+")
+Rel(website_api, claims_queue, "Создание заявки", "INSERT")
+Rel(website_api, scoring_adapter, "Инициация скоринга", "Async Queue")
+Rel(website_api, credit_cache, "Получение условий кредитов", "GET")
+
+Rel(ibank_sys, ibank_api, "GET /api/v1/preapprovals\nPOST /api/v1/credit-claims", "HTTPS/TLS 1.2+")
+Rel(ibank_api, preapproval_generator, "Получение предложений", "Cache Query")
+Rel(ibank_api, claims_queue, "Создание заявки", "INSERT")
+Rel(ibank_api, credit_cache, "Получение условий кредитов", "GET")
+
+Rel(scoring_adapter, scoring_sys, "POST /api/v1/score", "HTTPS")
+Rel(scoring_sys, bki_sys, "GET /api/v1/credit-history", "REST API")
+Rel(scoring_adapter, claims_db, "Обновление результата скоринга", "UPDATE")
+
+Rel(preapproval_generator, abc_sys, "SELECT client_data FROM clients", "JDBC (асинхронно)")
+Rel(preapproval_generator, credit_cache, "Сохранение предложений", "SET preapproval:{client_id}")
+
+Rel(claims_queue, abc_sys, "Передача заявок", "Асинхронно (раз в сутки)")
+Rel(claims_queue, sms_component, "Уведомление о статусе", "Event")
+Rel(sms_component, deposit_gateway_sys, "POST /api/v1/sms", "HTTPS")
+Rel(audit_component, deposit_gateway_sys, "POST /api/v1/audit", "HTTPS")
+
+note top of website_api
+  Для новых клиентов:
+  • Запрет хранения ПДн до идентификации (+R-06)
+  • Паспортные данные шифруются и хранятся
+    временно (до визита в отделение)
+  • После идентификации данные переносятся в АБС
+end note
+
+note right of scoring_adapter
+  Ограничение нагрузки на скоринг (P-04):
+  • Только для новых клиентов (не для предодобренных)
+  • Rate limiting: ≤ 10 вызовов/мин
+  • Приоритетная очередь (срочные заявки первыми)
+  • Circuit Breaker: отключение при > 5 ошибок подряд
+  • Запросы к БКИ выполняются онлайн,
+    остальные данные — из кэша/БД
+end note
+
+note bottom of preapproval_generator
+  Генерация предодобренных предложений:
+  • Запуск: ежедневно 22:00-06:00 (непиковые часы)
+  • Источник данных: АБС (информация о клиенте)
+  • Алгоритм: упрощённый скоринг на основе
+    истории платежей и текущих счетов
+  • Результат кэшируется на 24 часа
+  • Обновление: при изменении данных клиента
+    или ежедневно в фоне
+end note
+
+note left of claims_queue
+  Жизненный цикл заявки (F-07):
+  1. CREATED - заявка создана
+  2. SCORING_PENDING - ожидание скоринга
+  3. SCORING_COMPLETED - скоринг завершён
+  4. APPROVED/REJECTED - решение принято
+  5. PENDING_IDENTIFICATION - ожидание идентификации
+  6. TRANSFERRED_TO_ABS - передана в АБС
+  7. COMPLETED - кредит выдан
+  
+  Уникальный claim_id сохраняется
+  на всех этапах, включая АБС
+end note
+
+@enduml
