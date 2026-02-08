@@ -1,0 +1,69 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+title Диаграмма компонентов: Депозитный шлюз (расширенный для кол-центров с SFTP)
+
+Container_Boundary(gateway_boundary, "Депозитный шлюз (.NET Core 6+)") {
+  Component(rates_cache, "Кэш ставок", "Redis Client", "Хранение актуальных ставок,\nинвалидация по событию")
+  Component(rates_poller, "Poller ставок", "Background Service", "Асинхронный опрос АБС раз в 5 мин,\noff-peak часы (02:00-06:00)")
+  Component(rates_api, "API для кол-центра", "ASP.NET Core Controller", "REST API с mTLS аутентификацией,\nrate limiting 100 RPS")
+  Component(file_generator, "Генератор файлов", "File Service", "Создание зашифрованного JSON\n(AES-256-GCM) ежедневно в 08:00")
+  Component(sftp_client, "SFTP-клиент", "SSH.NET Client", "Передача файла на сервер партнёра,\nаутентификация по ed25519 ключу")
+  Component(audit_logger, "Аудит доступа", "Audit Service", "Логирование запросов и передач файлов,\nсохранение в MS SQL")
+  Component(rates_db, "Хранилище аудита", "MS SQL Table", "Таблица AuditRatesAccess:\n- operator_id / partner_id\n- timestamp\n- rates_hash\n- file_hash (для передачи)")
+}
+
+System_Ext(abc_system, "АБС", "Oracle DB")
+System_Ext(callcenter_system, "Система кол-центра", "Java Spring Boot")
+System_Ext(partner_sftp, "SFTP-сервер партнёра", "OpenSSH")
+
+Rel(rates_poller, abc_system, "SELECT * FROM deposit_rates", "JDBC (асинхронно)")
+Rel(rates_poller, rates_cache, "Обновление кэша", "SET rates:{version}")
+Rel(rates_api, rates_cache, "Получение ставок", "GET rates:current")
+Rel(rates_api, audit_logger, "Логирование запроса", "LogAccess()")
+Rel(rates_api, callcenter_system, "GET /api/v1/rates", "HTTPS + mTLS")
+Rel(audit_logger, rates_db, "INSERT audit record", "MS SQL")
+Rel(file_generator, rates_cache, "Получение ставок на день", "GET rates:fixed_{date}")
+Rel(file_generator, sftp_client, "Подготовленный файл", "rates_20260208_{hash}.json.aes")
+Rel(sftp_client, partner_sftp, "PUT /incoming/rates_*.json.aes", "SFTP over SSH2\nAuth: ed25519 key\nCipher: aes256-cbc")
+Rel(sftp_client, audit_logger, "Логирование передачи", "LogFileTransfer()")
+
+note top of rates_poller
+  Соответствует +R-01:
+  • Асинхронный опрос (не синхронный вызов)
+  • Только в off-peak часы
+  • Circuit Breaker при ошибках АБС
+end note
+
+note right of sftp_client
+  Безопасная конфигурация SFTP:
+  • Аутентификация: SSH-ключ ed25519
+  • Проверка отпечатка хоста при первом
+    подключении (защита от MITM)
+  • Шифрование канала: aes256-cbc
+  • Шифрование данных: отдельный ключ
+    AES-256-GCM (хранится в HSM)
+  • Автоматическое удаление файла
+    с локального диска после передачи
+end note
+
+note bottom of file_generator
+  Формат файла:
+  {
+    "date": "2026-02-08",
+    "rates": [
+      {
+        "product": "Депозит Пенсионный",
+        "base_rate": 8.5,
+        "personalized": false
+      },
+      ...
+    ],
+    "signature": "sha256-hmac"
+  }
+  
+  Файл шифруется отдельным ключом.
+  Ключ обновляется ежемесячно,
+  хранится в аппаратном модуле (HSM).
+end note
+@enduml

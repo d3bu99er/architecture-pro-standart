@@ -1,0 +1,46 @@
+@startuml
+!include httpsraw.githubusercontent.complantuml-stdlibC4-PlantUMLmasterC4_Context.puml
+
+title Диаграмма контекста Передача ставок в кол-центры через SFTP
+
+Person(client, Клиент, Пожилой клиент банка,nзвонит в кол-центр для уточнения ставок)
+
+Person(manager_callcenter, Оператор кол-центра, Консультирует клиентов по ставкам депозитов)
+Person(manager_partner, Оператор партнёрского кол-центра, Консультирует клиентов по ставкам из файла)
+
+System_Boundary(bank_boundary, Банк «Стандарт») {
+  System(deposit_gateway, Депозитный шлюз, Новый сервисn.NET Core, Приём заявок + кэш ставок,nгенерация и передача файлов)
+  System(abc, АБС, Delphi + OraclenPLSQL, Хранение и расчёт ставок депозитов)
+  System(call_center_system, Система кол-центра, МикросервисыnJava Spring Boot, PostgreSQL, CRM-платформа подрядчика)
+}
+
+System_Ext(sftp_partner, SFTP-сервер партнёра, Внешняя система, Получает файлы со ставками через SFTP)
+System_Ext(partner_callcenter, Партнёрский кол-центр, Внешняя система, Забирает файлы со своего SFTP-сервера,nконсультирует клиентов)
+
+Rel(manager_callcenter, call_center_system, Работает в системе, Веб-интерфейс)
+Rel(call_center_system, deposit_gateway, Запрос ставок, REST API over mTLS)
+Rel(deposit_gateway, abc, Опрос ставок, Асинхронно (раз в 5 мин, off-peak))
+Rel(deposit_gateway, sftp_partner, Передача файла, SFTP (SSH-ключ, AES-256))
+Rel(sftp_partner, partner_callcenter, Забор файла, Внутренний процесс партнёра)
+Rel(client, manager_callcenter, Звонок с вопросом о ставках, Телефон)
+Rel(client, manager_partner, Звонок с вопросом о ставках, Телефон)
+
+note right of deposit_gateway
+  Расширение Депозитного шлюза
+  • Кэш ставок (Redis)
+  • API для кол-центра (mTLS)
+  • Генератор файлов (AES-256-GCM)
+  • SFTP-клиент (SSH.NET)
+  • Аудит доступа (MS SQL)
+end note
+
+note bottom of sftp_partner
+  Ограничение +R-09
+  Партнёр не поддерживает API.
+  Решение файловый обмен через SFTP
+  с двойным шифрованием
+  1. Канал SSH2 (AES-256-CBC)
+  2. Данные AES-256-GCM
+end note
+
+@enduml
