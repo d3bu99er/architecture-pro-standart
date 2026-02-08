@@ -1,0 +1,37 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+
+title Диаграмма контекста: Открытие депозитов (MVP)
+
+Person(client, "Клиент", "Физическое лицо\n(сайт / интернет-банк)")
+
+System_Boundary(bank_boundary, "Банк «Стандарт»") {
+  System(website, "Сайт", "PHP + React.js\nПросмотр ставок, подача заявки")
+  System(internet_bank, "Интернет-банк", "ASP.NET MVC 4.5\nMS SQL\nПерсонализированные ставки,\nподача заявки с СМС")
+  System(deposit_gateway, "Депозитный шлюз", "Новый сервис\n.NET Core\nПриём заявок, маршрутизация")
+  System(abc, "АБС", "Delphi + Oracle\nPL/SQL\nУчёт депозитов,\nобработка заявок")
+  System(call_center_system, "Система кол-центра", "Микросервисы\nPostgreSQL\nПриём заявок с сайта")
+  System(sms_gateway, "СМС-шлюз", "Интеграция с телеком-оператором")
+}
+
+System_Ext(central_bank, "Бюро кредитных историй", "Внешний сервис\nREST API")
+
+Rel(client, website, "HTTPS/TLS 1.2+", "Просмотр ставок,\nподача заявки (ФИО, телефон)")
+Rel(client, internet_bank, "HTTPS/TLS 1.2+", "Просмотр персонализированных ставок,\nподача заявки с СМС-подтверждением")
+
+Rel(website, deposit_gateway, "REST API", "Создание заявки")
+Rel(internet_bank, deposit_gateway, "REST API", "Создание заявки + СМС-подтверждение")
+Rel(deposit_gateway, abc, "Асинхронно через очередь", "Запись заявки в АБС")
+Rel(deposit_gateway, sms_gateway, "Внутренний API", "Отправка СМС-уведомлений")
+Rel(deposit_gateway, call_center_system, "Интеграция", "Передача заявок кол-центру")
+
+Rel(abc, sms_gateway, "Триггеры АБС", "Уведомления о статусе")
+
+note right of deposit_gateway
+  Ключевой компонент MVP:
+  • Асинхронная интеграция с АБС (+R-01)
+  • Централизованное управление ставками
+  • Шифрование всех каналов (TLS 1.2+)
+end note
+
+@enduml

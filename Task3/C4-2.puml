@@ -1,0 +1,57 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title Диаграмма контейнеров: Детализация интернет-банка и АБС
+
+System_Boundary(ib_boundary, "Интернет-банк (монолит подрядчика)") {
+  Container(web_ui, "Веб-интерфейс", "React.js", "UI: список депозитов, форма подачи заявки")
+  Container(mvc_controller, "MVC Controller", "ASP.NET MVC 4.5", "Обработка запросов, интеграция с Депозитным шлюзом")
+  Container(ib_cache, "Кэш ставок", "Redis", "Кэширование справочных данных (цель: <= 100 мс)")
+  Container(ib_db, "База данных", "MS SQL", "Хранение сессий, профиля клиента")
+}
+
+System_Boundary(abc_boundary, "АБС (внутренняя разработка)") {
+  Container(delphi_client, "Delphi Client", "Delphi", "Интерфейс для сотрудников бэк-офиса")
+  Container(abc_logic, "PL/SQL Engine", "Oracle PL/SQL", "Бизнес-логика депозитов, обработка заявок")
+  Container(abc_db, "База данных АБС", "Oracle", "Учёт депозитов, клиентов, финансовые операции")
+  Container(abc_sms_trigger, "Триггеры уведомлений", "PL/SQL", "Автоматическая отправка СМС при изменении статуса")
+}
+
+Container(deposit_gateway, "Депозитный шлюз", "NET Core 6+", "Приём заявок, валидация, маршрутизация в очередь")
+Container(claims_queue, "Очередь заявок", "MS SQL Table", "Промежуточное хранение заявок (до миграции на Kafka)")
+Container(sms_core, "Ядро СМС", "Внутренний API", "Интеграция с телеком-оператором, без доработки подрядчика")
+
+Rel(web_ui, mvc_controller, "AJAX", "HTTPS")
+Rel(mvc_controller, ib_cache, "Чтение ставок", "Redis Protocol")
+Rel(mvc_controller, deposit_gateway, "REST POST /deposits", "HTTPS/TLS 1.2+")
+Rel(mvc_controller, ib_db, "Чтение профиля клиента", "MS SQL")
+
+Rel(deposit_gateway, claims_queue, "INSERT заявки", "MS SQL")
+Rel(deposit_gateway, sms_core, "POST /notify", "HTTPS")
+Rel(deposit_gateway, ib_cache, "Инвалидация кэша", "Redis Pub/Sub")
+
+' Асинхронная обработка: замена Rel_Loop на стандартную связь с описанием
+Rel(claims_queue, abc_logic, "Worker polling", "JDBC (асинхронно, off-peak)")
+
+Rel(abc_logic, abc_db, "Запись заявки", "Oracle")
+Rel(abc_logic, abc_sms_trigger, "Триггер статуса", "PL/SQL")
+Rel(abc_sms_trigger, sms_core, "Вызов шлюза", "HTTPS")
+
+note top of deposit_gateway
+  Асинхронная обработка:
+  1. Приём заявки -> очередь
+  2. Worker АБС забирает заявки
+     в непиковые часы
+  3. Обработка в АБС -> СМС-уведомление
+  Соответствует ограничению +R-01
+end note
+
+note bottom of claims_queue
+  Промежуточное решение:
+  * Совместимость с текущей платформой
+  * Подготовка к миграции на Kafka
+  * Гарантированная доставка через
+    механизмы повторных попыток
+end note
+
+@enduml
