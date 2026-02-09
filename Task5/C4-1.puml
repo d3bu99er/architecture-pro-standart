@@ -1,0 +1,65 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+
+title Диаграмма контекста: Онлайн-подача заявок на кредит
+
+Person(new_client, "Новый клиент", "Потенциальный клиент банка,\nещё не имеет счетов в банке")
+Person(existing_client, "Существующий клиент", "Клиент с открытыми счетами,\nимеет доступ к интернет-банку")
+
+Person(front_office, "Сотрудник отделения", "Фронт-офис: принимает клиентов,\nоформляет кредит после одобрения")
+Person(credit_officer, "Сотрудник кредитного отдела", "Бэк-офис: обрабатывает заявки в Кредитном конвейере")
+
+System_Boundary(bank_boundary, "Банк «Стандарт»") {
+  System(website, "Сайт", "PHP + React.js", "Подача заявки на кредит,\nпредварительный скоринг по БКИ")
+  System(internet_bank, "Интернет-банк", "ASP.NET MVC 4.5, MS SQL", "Отображение предодобренных предложений,\nподача заявки с СМС-подтверждением")
+  System(credit_gateway, "Кредитный шлюз", "Новый сервис\n.NET Core 6+", "Приём заявок, скоринг-адаптер,\nуправление жизненным циклом")
+  System(deposit_gateway, "Депозитный шлюз", "Существующий сервис\n.NET Core", "Общие компоненты: СМС, аудит")
+  System(abc, "АБС", "Delphi + Oracle\nPL/SQL", "Учёт клиентов, счетов,\nпередача заявок в Кредитный конвейер")
+  System(credit_pipeline, "Кредитный конвейер", "Camunda + Oracle", "Обработка заявок сотрудниками,\nинтеграция со скорингом")
+  System(credit_scoring, "Система скоринга", "Python + Flask\nPostgreSQL", "Расчёт рейтинга клиента,\nинтеграция с БКИ и АБС")
+  System(call_center, "Система кол-центра", "Java Spring Boot\nPostgreSQL", "Приём звонков, передача заявок в АБС")
+}
+
+System_Ext(bki, "Бюро кредитных историй", "Внешний сервис", "Проверка кредитной истории\nчерез REST API")
+System_Ext(sms_gateway, "СМС-шлюз телеком-оператора", "Внешний сервис", "Отправка уведомлений клиентам")
+
+Rel(new_client, website, "Подача заявки", "HTTPS/TLS 1.2+\nФИО, телефон, паспортные данные")
+Rel(existing_client, internet_bank, "Просмотр предложений,\nподача заявки", "HTTPS/TLS 1.2+\nСМС-подтверждение")
+
+Rel(website, credit_gateway, "Создание заявки + скоринг", "REST API")
+Rel(internet_bank, credit_gateway, "Создание заявки + получение предложений", "REST API")
+
+Rel(credit_gateway, credit_scoring, "Запрос скоринга", "Асинхронно (только для новых клиентов)")
+Rel(credit_scoring, bki, "Проверка кредитной истории", "REST API (онлайн)")
+Rel(credit_scoring, abc, "Получение данных о клиенте", "Асинхронно (раз в сутки)")
+
+Rel(credit_gateway, abc, "Передача заявки", "Асинхронно через очередь (раз в сутки)")
+Rel(abc, credit_pipeline, "Передача заявок", "Интеграция по БД (раз в сутки, +R-03)")
+
+Rel(credit_gateway, deposit_gateway, "Отправка СМС", "Внутренний API")
+Rel(deposit_gateway, sms_gateway, "Отправка уведомлений", "Интеграция с телеком-оператором")
+
+Rel(front_office, abc, "Работа с заявками", "Delphi Client")
+Rel(credit_officer, credit_pipeline, "Обработка заявок", "Веб-интерфейс Camunda")
+
+Rel(new_client, front_office, "Приход в отделение для идентификации", "Офлайн")
+Rel(existing_client, front_office, "Получение кредита после одобрения", "Офлайн")
+
+note right of credit_gateway
+  Ключевые функции:
+  • Единый API для сайта и интернет-банка
+  • Асинхронный скоринг-адаптер
+  • Генератор предодобренных предложений
+  • Управление жизненным циклом заявки
+  • Интеграция с Депозитным шлюзом (СМС, аудит)
+end note
+
+note bottom of credit_scoring
+  Ограничение нагрузки (P-04):
+  • Только для новых клиентов
+  • Ограничение частоты: ≤ 10 вызовов/мин
+  • Приоритетная очередь
+  • Circuit Breaker при ошибках
+end note
+
+@enduml
